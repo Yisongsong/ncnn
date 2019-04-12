@@ -23,17 +23,10 @@ class Reduction : public Layer
 {
 public:
     Reduction();
-    virtual ~Reduction();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    virtual int load_param_bin(FILE* paramfp);
-#endif // NCNN_STDIO
-    virtual int load_param(const unsigned char*& mem);
+    virtual int load_param(const ParamDict& pd);
 
-    virtual int forward(const Mat& bottom_blob, Mat& top_blob) const;
+    virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const;
 
     enum {
         ReductionOp_SUM     = 0,
@@ -41,7 +34,8 @@ public:
         ReductionOp_SUMSQ   = 2,
         ReductionOp_MEAN    = 3,
         ReductionOp_MAX     = 4,
-        ReductionOp_MIN     = 5
+        ReductionOp_MIN     = 5,
+        ReductionOp_PROD    = 6
     };
 
 public:

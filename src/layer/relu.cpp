@@ -13,6 +13,7 @@
 // specific language governing permissions and limitations under the License.
 
 #include "relu.h"
+#include <algorithm>
 
 namespace ncnn {
 
@@ -22,88 +23,22 @@ ReLU::ReLU()
 {
     one_blob_only = true;
     support_inplace = true;
+    support_vulkan = true;
+
+#if NCNN_VULKAN
+    pipeline_relu = 0;
+    pipeline_relu_pack4 = 0;
+#endif // NCNN_VULKAN
 }
 
-#if NCNN_STDIO
-#if NCNN_STRING
-int ReLU::load_param(FILE* paramfp)
+int ReLU::load_param(const ParamDict& pd)
 {
-    int nscan = fscanf(paramfp, "%f", &slope);
-    if (nscan != 1)
-    {
-        fprintf(stderr, "ReLU load_param failed %d\n", nscan);
-        return -1;
-    }
-
-    return 0;
-}
-#endif // NCNN_STRING
-int ReLU::load_param_bin(FILE* paramfp)
-{
-    fread(&slope, sizeof(float), 1, paramfp);
-
-    return 0;
-}
-#endif // NCNN_STDIO
-
-int ReLU::load_param(const unsigned char*& mem)
-{
-    slope = *(float*)(mem);
-    mem += 4;
+    slope = pd.get(0, 0.f);
 
     return 0;
 }
 
-int ReLU::forward(const Mat& bottom_blob, Mat& top_blob) const
-{
-    int w = bottom_blob.w;
-    int h = bottom_blob.h;
-    int channels = bottom_blob.c;
-    int size = w * h;
-
-    top_blob.create(w, h, channels);
-    if (top_blob.empty())
-        return -100;
-
-    if (slope == 0.f)
-    {
-        #pragma omp parallel for
-        for (int q=0; q<channels; q++)
-        {
-            const float* ptr = bottom_blob.channel(q);
-            float* outptr = top_blob.channel(q);
-
-            for (int i=0; i<size; i++)
-            {
-                if (ptr[i] < 0)
-                    outptr[i] = 0;
-                else
-                    outptr[i] = ptr[i];
-            }
-        }
-    }
-    else
-    {
-        #pragma omp parallel for
-        for (int q=0; q<channels; q++)
-        {
-            const float* ptr = bottom_blob.channel(q);
-            float* outptr = top_blob.channel(q);
-
-            for (int i=0; i<size; i++)
-            {
-                if (ptr[i] < 0)
-                    outptr[i] = ptr[i] * slope;
-                else
-                    outptr[i] = ptr[i];
-            }
-        }
-    }
-
-    return 0;
-}
-
-int ReLU::forward_inplace(Mat& bottom_top_blob) const
+int ReLU::forward_inplace_int8(Mat& bottom_top_blob, const Option& opt) const
 {
     int w = bottom_top_blob.w;
     int h = bottom_top_blob.h;
@@ -112,7 +47,50 @@ int ReLU::forward_inplace(Mat& bottom_top_blob) const
 
     if (slope == 0.f)
     {
-        #pragma omp parallel for
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q=0; q<channels; q++)
+        {
+            signed char* ptr = bottom_top_blob.channel(q);
+
+            for (int i=0; i<size; i++)
+            {
+                if (ptr[i] < 0)
+                    ptr[i] = 0;
+            }
+        }
+    }
+    else
+    {
+        // TODO
+        // #pragma omp parallel for num_threads(opt.num_threads)
+        // for (int q=0; q<channels; q++)
+        // {
+        //     float* ptr = bottom_top_blob.channel(q);
+
+        //     for (int i=0; i<size; i++)
+        //     {
+        //         if (ptr[i] < 0)
+        //             ptr[i] *= slope;
+        //     }
+        // }
+    }
+
+    return 0;
+}
+
+int ReLU::forward_inplace(Mat& bottom_top_blob, const Option& opt) const
+{
+    if (bottom_top_blob.elemsize == 1u)
+        return ReLU::forward_inplace_int8(bottom_top_blob, opt);
+
+    int w = bottom_top_blob.w;
+    int h = bottom_top_blob.h;
+    int channels = bottom_top_blob.c;
+    int size = w * h;
+
+    if (slope == 0.f)
+    {
+        #pragma omp parallel for num_threads(opt.num_threads)
         for (int q=0; q<channels; q++)
         {
             float* ptr = bottom_top_blob.channel(q);
@@ -126,7 +104,7 @@ int ReLU::forward_inplace(Mat& bottom_top_blob) const
     }
     else
     {
-        #pragma omp parallel for
+        #pragma omp parallel for num_threads(opt.num_threads)
         for (int q=0; q<channels; q++)
         {
             float* ptr = bottom_top_blob.channel(q);
@@ -141,5 +119,64 @@ int ReLU::forward_inplace(Mat& bottom_top_blob) const
 
     return 0;
 }
+
+#if NCNN_VULKAN
+int ReLU::create_pipeline()
+{
+    std::vector<vk_specialization_type> specializations(1);
+    specializations[0].f = slope;
+
+    // pack1
+    {
+        pipeline_relu = new Pipeline(vkdev);
+        pipeline_relu->set_optimal_local_size_xyz();
+        pipeline_relu->create("relu", specializations, 1, 5);
+    }
+
+    // pack4
+    {
+        pipeline_relu_pack4 = new Pipeline(vkdev);
+        pipeline_relu_pack4->set_optimal_local_size_xyz();
+        pipeline_relu_pack4->create("relu_pack4", specializations, 1, 5);
+    }
+
+    return 0;
+}
+
+int ReLU::destroy_pipeline()
+{
+    delete pipeline_relu;
+    pipeline_relu = 0;
+
+    delete pipeline_relu_pack4;
+    pipeline_relu_pack4 = 0;
+
+    return 0;
+}
+
+int ReLU::forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const
+{
+    int packing = bottom_top_blob.packing;
+
+//     fprintf(stderr, "ReLU::forward_inplace %p\n", bottom_top_blob.buffer());
+
+    std::vector<VkMat> bindings(1);
+    bindings[0] = bottom_top_blob;
+
+    std::vector<vk_constant_type> constants(5);
+    constants[0].i = bottom_top_blob.dims;
+    constants[1].i = bottom_top_blob.w;
+    constants[2].i = bottom_top_blob.h;
+    constants[3].i = bottom_top_blob.c;
+    constants[4].i = bottom_top_blob.cstep;
+
+    const Pipeline* pipeline = packing == 4 ? pipeline_relu_pack4 : pipeline_relu;
+
+    // record
+    cmd.record_pipeline(pipeline, bindings, constants, bottom_top_blob);
+
+    return 0;
+}
+#endif // NCNN_VULKAN
 
 } // namespace ncnn

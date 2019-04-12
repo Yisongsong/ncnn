@@ -18,10 +18,65 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <math.h>
 #include "mat.h"
+#include "modelbin.h"
+#include "paramdict.h"
 #include "platform.h"
 
+#if NCNN_VULKAN
+#include <vulkan/vulkan.h>
+#include "command.h"
+#include "pipeline.h"
+#endif // NCNN_VULKAN
+
 namespace ncnn {
+
+#if NCNN_VULKAN
+class VkAllocator;
+#endif // NCNN_VULKAN
+
+class Allocator;
+class Option
+{
+public:
+    // default option
+    Option();
+
+public:
+    // light mode
+    // intermediate blob will be recycled when enabled
+    // enabled by default
+    bool lightmode;
+
+    // thread count
+    // default value is the one returned by get_cpu_count()
+    int num_threads;
+
+    // blob memory allocator
+    Allocator* blob_allocator;
+
+    // workspace memory allocator
+    Allocator* workspace_allocator;
+
+#if NCNN_VULKAN
+    // enable vulkan compute
+    bool vulkan_compute;
+
+    // blob memory allocator
+    VkAllocator* blob_vkallocator;
+
+    // workspace memory allocator
+    VkAllocator* workspace_vkallocator;
+
+    // staging memory allocator
+    VkAllocator* staging_vkallocator;
+#endif // NCNN_VULKAN
+};
+
+// the global default option
+const Option& get_default_option();
+int set_default_option(const Option& opt);
 
 class Layer
 {
@@ -31,30 +86,13 @@ public:
     // virtual destructor
     virtual ~Layer();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    // load layer specific parameter from plain param file
+    // load layer specific parameter from parsed dict
     // return 0 if success
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    // load layer specific parameter from binary param file
-    // return 0 if success
-    virtual int load_param_bin(FILE* paramfp);
+    virtual int load_param(const ParamDict& pd);
 
-    // load layer specific weight data from model file
+    // load layer specific weight data from model binary
     // return 0 if success
-    virtual int load_model(FILE* binfp);
-#endif // NCNN_STDIO
-
-    // load layer specific parameter from memory
-    // memory pointer is 32-bit aligned
-    // return 0 if success
-    virtual int load_param(const unsigned char*& mem);
-
-    // load layer specific weight data from memory
-    // memory pointer is 32-bit aligned
-    // return 0 if success
-    virtual int load_model(const unsigned char*& mem);
+    virtual int load_model(const ModelBin& mb);
 
 public:
     // one input and one output blob
@@ -63,18 +101,47 @@ public:
     // support inplace inference
     bool support_inplace;
 
+    // support vulkan compute
+    bool support_vulkan;
+
 public:
     // implement inference
     // return 0 if success
-    virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs) const;
-    virtual int forward(const Mat& bottom_blob, Mat& top_blob) const;
+    virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt = get_default_option()) const;
+    virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt = get_default_option()) const;
 
     // implement inplace inference
     // return 0 if success
-    virtual int forward_inplace(std::vector<Mat>& bottom_top_blobs) const;
-    virtual int forward_inplace(Mat& bottom_top_blob) const;
+    virtual int forward_inplace(std::vector<Mat>& bottom_top_blobs, const Option& opt = get_default_option()) const;
+    virtual int forward_inplace(Mat& bottom_top_blob, const Option& opt = get_default_option()) const;
+
+#if NCNN_VULKAN
+public:
+    // upload weight blob from host to device
+    virtual int upload_model(VkTransfer& cmd);
+
+    virtual int create_pipeline();
+    virtual int destroy_pipeline();
 
 public:
+    // implement inference
+    // return 0 if success
+    virtual int forward(const std::vector<VkMat>& bottom_blobs, std::vector<VkMat>& top_blobs, VkCompute& cmd, const Option& opt = get_default_option()) const;
+    virtual int forward(const VkMat& bottom_blob, VkMat& top_blob, VkCompute& cmd, const Option& opt = get_default_option()) const;
+
+    // implement inplace inference
+    // return 0 if success
+    virtual int forward_inplace(std::vector<VkMat>& bottom_top_blobs, VkCompute& cmd, const Option& opt = get_default_option()) const;
+    virtual int forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt = get_default_option()) const;
+
+public:
+    // assigned immediately after creating this layer
+    const VulkanDevice* vkdev;
+#endif // NCNN_VULKAN
+
+public:
+    // layer type index
+    int typeindex;
 #if NCNN_STRING
     // layer type name
     std::string type;
@@ -86,57 +153,6 @@ public:
     // blob index which this layer produces as output
     std::vector<int> tops;
 };
-
-namespace LayerType {
-enum
-{
-    AbsVal      = 0,
-    ArgMax      = 1,
-    BatchNorm   = 2,
-    Bias        = 3,
-    BNLL        = 4,
-    Concat      = 5,
-    Convolution = 6,
-    Crop        = 7,
-    Deconvolution = 8,
-    Dropout     = 9,
-    ELU         = 10,
-    Eltwise     = 11,
-    Embed       = 12,
-    Exp         = 13,
-    Flatten     = 14,
-    InnerProduct = 15,
-    Input       = 16,
-    Log         = 17,
-    LRN         = 18,
-    MemoryData  = 19,
-    MVN         = 20,
-    Pooling     = 21,
-    Power       = 22,
-    PReLU       = 23,
-    Proposal    = 24,
-    Reduction   = 25,
-    ReLU        = 26,
-    Reshape     = 27,
-    ROIPooling  = 28,
-    Scale       = 29,
-    Sigmoid     = 30,
-    Slice       = 31,
-    Softmax     = 32,
-    Split       = 33,
-    SPP         = 34,
-    TanH        = 35,
-    Threshold   = 36,
-    Tile        = 37,
-    RNN         = 38,
-    LSTM        = 39,
-    BinaryOp    = 40,
-    UnaryOp     = 41,
-    ConvolutionDepthWise = 42,
-
-    CustomBit   = (1<<8),
-};
-} // namespace LayerType
 
 // layer factory function
 typedef Layer* (*layer_creator_func)();
@@ -154,12 +170,14 @@ struct layer_registry_entry
 #if NCNN_STRING
 // get layer type from type name
 int layer_to_index(const char* type);
+// create layer from type name
+Layer* create_layer(const char* type);
 #endif // NCNN_STRING
 // create layer from layer type
 Layer* create_layer(int index);
 
 #define DEFINE_LAYER_CREATOR(name) \
-    Layer* name##_layer_creator() { return new name; }
+    ::ncnn::Layer* name##_layer_creator() { return new name; }
 
 } // namespace ncnn
 

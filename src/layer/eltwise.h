@@ -24,23 +24,28 @@ class Eltwise : public Layer
 public:
     Eltwise();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    virtual int load_param_bin(FILE* paramfp);
-#endif // NCNN_STDIO
-    virtual int load_param(const unsigned char*& mem);
+    virtual int load_param(const ParamDict& pd);
 
-    virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs) const;
+    virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) const;
+
+#if NCNN_VULKAN
+    virtual int create_pipeline();
+    virtual int destroy_pipeline();
+
+    virtual int forward(const std::vector<VkMat>& bottom_blobs, std::vector<VkMat>& top_blobs, VkCompute& cmd, const Option& opt) const;
+#endif // NCNN_VULKAN
 
     enum { Operation_PROD = 0, Operation_SUM = 1, Operation_MAX = 2 };
 
 public:
     // param
     int op_type;
-    int num_coeff;
     Mat coeffs;
+
+#if NCNN_VULKAN
+    Pipeline* pipeline_eltwise[2];
+    Pipeline* pipeline_eltwise_pack4[2];
+#endif // NCNN_VULKAN
 };
 
 } // namespace ncnn

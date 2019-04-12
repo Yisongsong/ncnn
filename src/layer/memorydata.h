@@ -24,22 +24,16 @@ class MemoryData : public Layer
 public:
     MemoryData();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    virtual int load_param_bin(FILE* paramfp);
-    virtual int load_model(FILE* binfp);
-#endif // NCNN_STDIO
-    virtual int load_param(const unsigned char*& mem);
-    virtual int load_model(const unsigned char*& mem);
+    virtual int load_param(const ParamDict& pd);
 
-    virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs) const;
+    virtual int load_model(const ModelBin& mb);
+
+    virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) const;
 
 public:
-    int c;
-    int h;
     int w;
+    int h;
+    int c;
 
     Mat data;
 };

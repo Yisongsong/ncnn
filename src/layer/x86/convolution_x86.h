@@ -19,10 +19,21 @@
 
 namespace ncnn {
 
+typedef void (*conv_func)(const Mat&, Mat&, const Mat&, const Mat&, const Option&);
+
 class Convolution_x86 : public Convolution
 {
 public:
-    virtual int forward(const Mat& bottom_blobs, Mat& top_blobs) const;
+    virtual int load_param(const ParamDict& pd);
+
+    virtual int load_model(const ModelBin& mb);
+
+    virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const;
+    virtual int forwardDilation(const Mat& bottom_blob, Mat &top_blob, conv_func conv, const Option& opt) const;
+
+public:
+    bool use_winograd3x3;
+    Mat weight_3x3_winograd23_data;
 };
 
 } // namespace ncnn

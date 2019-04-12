@@ -24,20 +24,25 @@ class ReLU : public Layer
 public:
     ReLU();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    virtual int load_param_bin(FILE* paramfp);
-#endif // NCNN_STDIO
-    virtual int load_param(const unsigned char*& mem);
+    virtual int load_param(const ParamDict& pd);
 
-    virtual int forward(const Mat& bottom_blob, Mat& top_blob) const;
+    virtual int forward_inplace(Mat& bottom_top_blob, const Option& opt) const;
+    virtual int forward_inplace_int8(Mat& bottom_top_blob, const Option& opt) const;
 
-    virtual int forward_inplace(Mat& bottom_top_blob) const;
+#if NCNN_VULKAN
+    virtual int create_pipeline();
+    virtual int destroy_pipeline();
+
+    virtual int forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const;
+#endif // NCNN_VULKAN
 
 public:
     float slope;
+
+#if NCNN_VULKAN
+    Pipeline* pipeline_relu;
+    Pipeline* pipeline_relu_pack4;
+#endif // NCNN_VULKAN
 };
 
 } // namespace ncnn

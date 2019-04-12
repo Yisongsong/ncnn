@@ -23,42 +23,22 @@ TanH::TanH()
 {
     one_blob_only = true;
     support_inplace = true;
+    support_vulkan = true;
+
+#if NCNN_VULKAN
+    pipeline_tanh = 0;
+    pipeline_tanh_pack4 = 0;
+#endif // NCNN_VULKAN
 }
 
-int TanH::forward(const Mat& bottom_blob, Mat& top_blob) const
-{
-    int w = bottom_blob.w;
-    int h = bottom_blob.h;
-    int channels = bottom_blob.c;
-    int size = w * h;
-
-    top_blob.create(w, h, channels);
-    if (top_blob.empty())
-        return -100;
-
-    #pragma omp parallel for
-    for (int q=0; q<channels; q++)
-    {
-        const float* ptr = bottom_blob.channel(q);
-        float* outptr = top_blob.channel(q);
-
-        for (int i=0; i<size; i++)
-        {
-            outptr[i] = tanh(ptr[i]);
-        }
-    }
-
-    return 0;
-}
-
-int TanH::forward_inplace(Mat& bottom_top_blob) const
+int TanH::forward_inplace(Mat& bottom_top_blob, const Option& opt) const
 {
     int w = bottom_top_blob.w;
     int h = bottom_top_blob.h;
     int channels = bottom_top_blob.c;
     int size = w * h;
 
-    #pragma omp parallel for
+    #pragma omp parallel for num_threads(opt.num_threads)
     for (int q=0; q<channels; q++)
     {
         float* ptr = bottom_top_blob.channel(q);
@@ -71,5 +51,63 @@ int TanH::forward_inplace(Mat& bottom_top_blob) const
 
     return 0;
 }
+
+#if NCNN_VULKAN
+int TanH::create_pipeline()
+{
+    std::vector<vk_specialization_type> specializations;
+
+    // pack1
+    {
+        pipeline_tanh = new Pipeline(vkdev);
+        pipeline_tanh->set_optimal_local_size_xyz();
+        pipeline_tanh->create("tanh", specializations, 1, 5);
+    }
+
+    // pack4
+    {
+        pipeline_tanh_pack4 = new Pipeline(vkdev);
+        pipeline_tanh_pack4->set_optimal_local_size_xyz();
+        pipeline_tanh_pack4->create("tanh_pack4", specializations, 1, 5);
+    }
+
+    return 0;
+}
+
+int TanH::destroy_pipeline()
+{
+    delete pipeline_tanh;
+    pipeline_tanh = 0;
+
+    delete pipeline_tanh_pack4;
+    pipeline_tanh_pack4 = 0;
+
+    return 0;
+}
+
+int TanH::forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const
+{
+    int packing = bottom_top_blob.packing;
+
+//     fprintf(stderr, "TanH::forward_inplace %p\n", bottom_top_blob.buffer());
+
+    std::vector<VkMat> bindings(1);
+    bindings[0] = bottom_top_blob;
+
+    std::vector<vk_constant_type> constants(5);
+    constants[0].i = bottom_top_blob.dims;
+    constants[1].i = bottom_top_blob.w;
+    constants[2].i = bottom_top_blob.h;
+    constants[3].i = bottom_top_blob.c;
+    constants[4].i = bottom_top_blob.cstep;
+
+    const Pipeline* pipeline = packing == 4 ? pipeline_tanh_pack4 : pipeline_tanh;
+
+    // record
+    cmd.record_pipeline(pipeline, bindings, constants, bottom_top_blob);
+
+    return 0;
+}
+#endif // NCNN_VULKAN
 
 } // namespace ncnn

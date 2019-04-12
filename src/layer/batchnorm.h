@@ -23,25 +23,26 @@ class BatchNorm : public Layer
 {
 public:
     BatchNorm();
-    virtual ~BatchNorm();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    virtual int load_param_bin(FILE* paramfp);
-    virtual int load_model(FILE* binfp);
-#endif // NCNN_STDIO
-    virtual int load_param(const unsigned char*& mem);
-    virtual int load_model(const unsigned char*& mem);
+    virtual int load_param(const ParamDict& pd);
 
-    virtual int forward(const Mat& bottom_blob, Mat& top_blob) const;
+    virtual int load_model(const ModelBin& mb);
 
-    virtual int forward_inplace(Mat& bottom_top_blob) const;
+    virtual int forward_inplace(Mat& bottom_top_blob, const Option& opt) const;
+
+#if NCNN_VULKAN
+    virtual int upload_model(VkTransfer& cmd);
+
+    virtual int create_pipeline();
+    virtual int destroy_pipeline();
+
+    virtual int forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const;
+#endif // NCNN_VULKAN
 
 public:
     // param
     int channels;
+    float eps;
 
     // model
     Mat slope_data;
@@ -51,6 +52,17 @@ public:
 
     Mat a_data;
     Mat b_data;
+
+#if NCNN_VULKAN
+    VkMat a_data_gpu;
+    VkMat b_data_gpu;
+    Pipeline* pipeline_batchnorm;
+
+    VkMat a_data_gpu_pack4;
+    VkMat b_data_gpu_pack4;
+    Pipeline* pipeline_batchnorm_pack4;
+#endif // NCNN_VULKAN
+
 };
 
 } // namespace ncnn

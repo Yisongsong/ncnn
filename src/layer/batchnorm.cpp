@@ -13,6 +13,7 @@
 // specific language governing permissions and limitations under the License.
 
 #include "batchnorm.h"
+#include "pipeline.h"
 #include <math.h>
 
 namespace ncnn {
@@ -23,76 +24,39 @@ BatchNorm::BatchNorm()
 {
     one_blob_only = true;
     support_inplace = true;
+    support_vulkan = true;
+
+#if NCNN_VULKAN
+    pipeline_batchnorm = 0;
+    pipeline_batchnorm_pack4 = 0;
+#endif // NCNN_VULKAN
 }
 
-BatchNorm::~BatchNorm()
+int BatchNorm::load_param(const ParamDict& pd)
 {
-}
-
-#if NCNN_STDIO
-#if NCNN_STRING
-int BatchNorm::load_param(FILE* paramfp)
-{
-    int nscan = fscanf(paramfp, "%d", &channels);
-    if (nscan != 1)
-    {
-        fprintf(stderr, "BatchNorm load_param failed %d\n", nscan);
-        return -1;
-    }
-
-    return 0;
-}
-#endif // NCNN_STRING
-int BatchNorm::load_param_bin(FILE* paramfp)
-{
-    fread(&channels, sizeof(int), 1, paramfp);
+    channels = pd.get(0, 0);
+    eps = pd.get(1, 0.f);
 
     return 0;
 }
 
-int BatchNorm::load_model(FILE* binfp)
+int BatchNorm::load_model(const ModelBin& mb)
 {
-    int nread;
-
-    slope_data.create(channels);
+    slope_data = mb.load(channels, 1);
     if (slope_data.empty())
         return -100;
-    nread = fread(slope_data, channels * sizeof(float), 1, binfp);
-    if (nread != 1)
-    {
-        fprintf(stderr, "BatchNorm read slope_data failed %d\n", nread);
-        return -1;
-    }
 
-    mean_data.create(channels);
+    mean_data = mb.load(channels, 1);
     if (mean_data.empty())
         return -100;
-    nread = fread(mean_data, channels * sizeof(float), 1, binfp);
-    if (nread != 1)
-    {
-        fprintf(stderr, "BatchNorm read mean_data failed %d\n", nread);
-        return -1;
-    }
 
-    var_data.create(channels);
+    var_data = mb.load(channels, 1);
     if (var_data.empty())
         return -100;
-    nread = fread(var_data, channels * sizeof(float), 1, binfp);
-    if (nread != 1)
-    {
-        fprintf(stderr, "BatchNorm read var_data failed %d\n", nread);
-        return -1;
-    }
 
-    bias_data.create(channels);
+    bias_data = mb.load(channels, 1);
     if (bias_data.empty())
         return -100;
-    nread = fread(bias_data, channels * sizeof(float), 1, binfp);
-    if (nread != 1)
-    {
-        fprintf(stderr, "BatchNorm read bias_data failed %d\n", nread);
-        return -1;
-    }
 
     a_data.create(channels);
     if (a_data.empty())
@@ -100,128 +64,163 @@ int BatchNorm::load_model(FILE* binfp)
     b_data.create(channels);
     if (b_data.empty())
         return -100;
-    const float* slope_data_ptr = slope_data;
-    const float* mean_data_ptr = mean_data;
-    const float* var_data_ptr = var_data;
-    const float* bias_data_ptr = bias_data;
-    float* a_data_ptr = a_data;
-    float* b_data_ptr = b_data;
+
     for (int i=0; i<channels; i++)
     {
-        float sqrt_var = sqrt(var_data_ptr[i]);
-        a_data_ptr[i] = bias_data_ptr[i] - slope_data_ptr[i] * mean_data_ptr[i] / sqrt_var;
-        b_data_ptr[i] = slope_data_ptr[i] / sqrt_var;
-    }
-
-    return 0;
-}
-#endif // NCNN_STDIO
-
-int BatchNorm::load_param(const unsigned char*& mem)
-{
-    channels = *(int*)(mem);
-    mem += 4;
-
-    return 0;
-}
-
-int BatchNorm::load_model(const unsigned char*& mem)
-{
-    slope_data = Mat(channels, (float*)mem);
-    mem += channels * sizeof(float);
-
-    mean_data = Mat(channels, (float*)mem);
-    mem += channels * sizeof(float);
-
-    var_data = Mat(channels, (float*)mem);
-    mem += channels * sizeof(float);
-
-    bias_data = Mat(channels, (float*)mem);
-    mem += channels * sizeof(float);
-
-    a_data.create(channels);
-    if (a_data.empty())
-        return -100;
-    b_data.create(channels);
-    if (b_data.empty())
-        return -100;
-    const float* slope_data_ptr = slope_data;
-    const float* mean_data_ptr = mean_data;
-    const float* var_data_ptr = var_data;
-    const float* bias_data_ptr = bias_data;
-    float* a_data_ptr = a_data;
-    float* b_data_ptr = b_data;
-    for (int i=0; i<channels; i++)
-    {
-        float sqrt_var = sqrt(var_data_ptr[i]);
-        a_data_ptr[i] = bias_data_ptr[i] - slope_data_ptr[i] * mean_data_ptr[i] / sqrt_var;
-        b_data_ptr[i] = slope_data_ptr[i] / sqrt_var;
+        float sqrt_var = sqrt(var_data[i] + eps);
+        a_data[i] = bias_data[i] - slope_data[i] * mean_data[i] / sqrt_var;
+        b_data[i] = slope_data[i] / sqrt_var;
     }
 
     return 0;
 }
 
-int BatchNorm::forward(const Mat& bottom_blob, Mat& top_blob) const
+int BatchNorm::forward_inplace(Mat& bottom_top_blob, const Option& opt) const
 {
     // a = bias - slope * mean / sqrt(var)
     // b = slope / sqrt(var)
     // value = b * value + a
 
-    int w = bottom_blob.w;
-    int h = bottom_blob.h;
-    int size = w * h;
+    int dims = bottom_top_blob.dims;
 
-    top_blob.create(w, h, channels);
-    if (top_blob.empty())
-        return -100;
-
-    const float* a_data_ptr = a_data;
-    const float* b_data_ptr = b_data;
-    #pragma omp parallel for
-    for (int q=0; q<channels; q++)
+    if (dims == 1)
     {
-        const float* ptr = bottom_blob.channel(q);
-        float* outptr = top_blob.channel(q);
+        int w = bottom_top_blob.w;
 
-        float a = a_data_ptr[q];
-        float b = b_data_ptr[q];
+        float* ptr = bottom_top_blob;
 
-        for (int i=0; i<size; i++)
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int i=0; i<w; i++)
         {
-            outptr[i] = b * ptr[i] + a;
+            ptr[i] = b_data[i] * ptr[i] + a_data[i];
+        }
+    }
+
+    if (dims == 2)
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int i=0; i<h; i++)
+        {
+            float* ptr = bottom_top_blob.row(i);
+            float a = a_data[i];
+            float b = b_data[i];
+
+            for (int j=0; j<w; j++)
+            {
+                ptr[j] = b * ptr[j] + a;
+            }
+        }
+    }
+
+    if (dims == 3)
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int size = w * h;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q=0; q<channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+            float a = a_data[q];
+            float b = b_data[q];
+
+            for (int i=0; i<size; i++)
+            {
+                ptr[i] = b * ptr[i] + a;
+            }
         }
     }
 
     return 0;
 }
 
-int BatchNorm::forward_inplace(Mat& bottom_top_blob) const
+#if NCNN_VULKAN
+int BatchNorm::upload_model(VkTransfer& cmd)
 {
-    // a = bias - slope * mean / sqrt(var)
-    // b = slope / sqrt(var)
-    // value = b * value + a
-
-    int w = bottom_top_blob.w;
-    int h = bottom_top_blob.h;
-    int size = w * h;
-
-    const float* a_data_ptr = a_data;
-    const float* b_data_ptr = b_data;
-    #pragma omp parallel for
-    for (int q=0; q<channels; q++)
+    // pack1
+    if (channels % 4 != 0)
     {
-        float* ptr = bottom_top_blob.channel(q);
+        cmd.record_upload(a_data, a_data_gpu);
+        cmd.record_upload(b_data, b_data_gpu);
+    }
 
-        float a = a_data_ptr[q];
-        float b = b_data_ptr[q];
+    // pack4
+    if (channels % 4 == 0)
+    {
+        Mat a_data_pack4;
+        convert_packing(a_data, a_data_pack4, 4);
+        cmd.record_upload(a_data_pack4, a_data_gpu_pack4);
 
-        for (int i=0; i<size; i++)
-        {
-            ptr[i] = b * ptr[i] + a;
-        }
+        Mat b_data_pack4;
+        convert_packing(b_data, b_data_pack4, 4);
+        cmd.record_upload(b_data_pack4, b_data_gpu_pack4);
     }
 
     return 0;
 }
+
+int BatchNorm::create_pipeline()
+{
+    std::vector<vk_specialization_type> specializations(0);
+
+    // pack1
+    if (channels % 4 != 0)
+    {
+        pipeline_batchnorm = new Pipeline(vkdev);
+        pipeline_batchnorm->set_optimal_local_size_xyz(32, 32, channels);
+        pipeline_batchnorm->create("batchnorm", specializations, 3, 5);
+    }
+
+    // pack4
+    if (channels % 4 == 0)
+    {
+        pipeline_batchnorm_pack4 = new Pipeline(vkdev);
+        pipeline_batchnorm_pack4->set_optimal_local_size_xyz(32, 32, channels / 4);
+        pipeline_batchnorm_pack4->create("batchnorm_pack4", specializations, 3, 5);
+    }
+
+    return 0;
+}
+
+int BatchNorm::destroy_pipeline()
+{
+    delete pipeline_batchnorm;
+    pipeline_batchnorm = 0;
+
+    delete pipeline_batchnorm_pack4;
+    pipeline_batchnorm_pack4 = 0;
+
+    return 0;
+}
+
+int BatchNorm::forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const
+{
+    int packing = bottom_top_blob.packing;
+//     fprintf(stderr, "BatchNorm::forward_inplace %p\n", bottom_top_blob.buffer());
+
+    std::vector<VkMat> bindings(3);
+    bindings[0] = bottom_top_blob;
+    bindings[1] = packing == 4 ? a_data_gpu_pack4 : a_data_gpu;
+    bindings[2] = packing == 4 ? b_data_gpu_pack4 : b_data_gpu;
+
+    std::vector<vk_constant_type> constants(5);
+    constants[0].i = bottom_top_blob.dims;
+    constants[1].i = bottom_top_blob.w;
+    constants[2].i = bottom_top_blob.h;
+    constants[3].i = bottom_top_blob.c;
+    constants[4].i = bottom_top_blob.cstep;
+
+    const Pipeline* pipeline = packing == 4 ? pipeline_batchnorm_pack4 : pipeline_batchnorm;
+
+    // record
+    cmd.record_pipeline(pipeline, bindings, constants, bottom_top_blob);
+
+    return 0;
+}
+#endif // NCNN_VULKAN
 
 } // namespace ncnn

@@ -24,22 +24,34 @@ class Reshape : public Layer
 public:
     Reshape();
 
-#if NCNN_STDIO
-#if NCNN_STRING
-    virtual int load_param(FILE* paramfp);
-#endif // NCNN_STRING
-    virtual int load_param_bin(FILE* paramfp);
-#endif // NCNN_STDIO
-    virtual int load_param(const unsigned char*& mem);
+    virtual int load_param(const ParamDict& pd);
 
-    virtual int forward(const Mat& bottom_blob, Mat& top_blob) const;
+    virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const;
+
+#if NCNN_VULKAN
+    virtual int create_pipeline();
+    virtual int destroy_pipeline();
+
+    virtual int forward(const VkMat& bottom_blob, VkMat& top_blob, VkCompute& cmd, const Option& opt) const;
+#endif // NCNN_VULKAN
 
 private:
+    // reshape flag
+    // 0 = copy from bottom
+    // -1 = remaining
+    // -233 = drop this dim (default)
     int w;
     int h;
     int c;
     int permute;
     int ndim;
+
+#if NCNN_VULKAN
+    Pipeline* pipeline_reshape;
+    Pipeline* pipeline_reshape_pack4;
+    Pipeline* pipeline_reshape_pack1to4;
+    Pipeline* pipeline_reshape_pack4to1;
+#endif // NCNN_VULKAN
 };
 
 } // namespace ncnn

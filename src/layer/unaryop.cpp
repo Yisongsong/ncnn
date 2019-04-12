@@ -24,92 +24,32 @@ UnaryOp::UnaryOp()
 {
     one_blob_only = true;
     support_inplace = true;
+    support_vulkan = true;
+
+#if NCNN_VULKAN
+    pipeline_unaryop = 0;
+    pipeline_unaryop_pack4 = 0;
+#endif // NCNN_VULKAN
 }
 
-#if NCNN_STDIO
-#if NCNN_STRING
-int UnaryOp::load_param(FILE* paramfp)
+int UnaryOp::load_param(const ParamDict& pd)
 {
-    int nscan = fscanf(paramfp, "%d", &op_type);
-    if (nscan != 1)
-    {
-        fprintf(stderr, "UnaryOp load_param failed %d\n", nscan);
-        return -1;
-    }
-
-    return 0;
-}
-#endif // NCNN_STRING
-int UnaryOp::load_param_bin(FILE* paramfp)
-{
-    fread(&op_type, sizeof(int), 1, paramfp);
-
-    return 0;
-}
-#endif // NCNN_STDIO
-
-int UnaryOp::load_param(const unsigned char*& mem)
-{
-    op_type = *(int*)(mem);
-    mem += 4;
+    op_type = pd.get(0, 0);
 
     return 0;
 }
 
 template<typename Op>
-static int unary_op(const Mat& a, Mat& b)
-{
-    Op op;
-
-    int w = a.w;
-    int h = a.h;
-    int channels = a.c;
-    int size = w * h * channels;
-
-    if (a.dims == 3)
-    {
-        b.create(w, h, channels);
-        if (b.empty())
-            return -100;
-    }
-    else if (a.dims == 2)
-    {
-        b.create(w, h);
-        if (b.empty())
-            return -100;
-    }
-    else if (a.dims == 1)
-    {
-        b.create(w);
-        if (b.empty())
-            return -100;
-    }
-
-    const float* ptr = a;
-    float* outptr = b;
-
-    #pragma omp parallel for
-    for (int i=0; i<size; i++)
-    {
-        outptr[i] = op(ptr[i]);
-    }
-
-    return 0;
-}
-
-template<typename Op>
-static int unary_op_inplace(Mat& a)
+static int unary_op_inplace(Mat& a, const Option& opt)
 {
     Op op;
 
     int size = a.total();
 
-    float* ptr = a;
-
-    #pragma omp parallel for
+    #pragma omp parallel for num_threads(opt.num_threads)
     for (int i=0; i<size; i++)
     {
-        ptr[i] = op(ptr[i]);
+        a[i] = op(a[i]);
     }
 
     return 0;
@@ -190,104 +130,118 @@ struct unary_op_atan : std::unary_function<T,T> {
     T operator() (const T& x) const { return atan(x); }
 };
 
-int UnaryOp::forward(const Mat& bottom_blob, Mat& top_blob) const
+template<typename T>
+struct unary_op_reciprocal : std::unary_function<T,T> {
+    T operator() (const T& x) const { return 1.f / x; }
+};
+
+int UnaryOp::forward_inplace(Mat& bottom_top_blob, const Option& opt) const
 {
     if (op_type == Operation_ABS)
-        return unary_op< unary_op_abs<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_abs<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_NEG)
-        return unary_op< unary_op_neg<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_neg<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_FLOOR)
-        return unary_op< unary_op_floor<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_floor<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_CEIL)
-        return unary_op< unary_op_ceil<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_ceil<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_SQUARE)
-        return unary_op< unary_op_square<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_square<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_SQRT)
-        return unary_op< unary_op_sqrt<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_sqrt<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_RSQRT)
-        return unary_op< unary_op_rsqrt<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_rsqrt<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_EXP)
-        return unary_op< unary_op_exp<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_exp<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_LOG)
-        return unary_op< unary_op_log<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_log<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_SIN)
-        return unary_op< unary_op_sin<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_sin<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_COS)
-        return unary_op< unary_op_cos<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_cos<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_TAN)
-        return unary_op< unary_op_tan<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_tan<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_ASIN)
-        return unary_op< unary_op_asin<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_asin<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_ACOS)
-        return unary_op< unary_op_acos<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_acos<float> >(bottom_top_blob, opt);
 
     if (op_type == Operation_ATAN)
-        return unary_op< unary_op_atan<float> >(bottom_blob, top_blob);
+        return unary_op_inplace< unary_op_atan<float> >(bottom_top_blob, opt);
+
+    if (op_type == Operation_RECIPROCAL)
+        return unary_op_inplace< unary_op_reciprocal<float> >(bottom_top_blob, opt);
 
     return 0;
 }
 
-int UnaryOp::forward_inplace(Mat& bottom_top_blob) const
+#if NCNN_VULKAN
+int UnaryOp::create_pipeline()
 {
-    if (op_type == Operation_ABS)
-        return unary_op_inplace< unary_op_abs<float> >(bottom_top_blob);
+    pipeline_unaryop = new Pipeline(vkdev);
+    pipeline_unaryop->set_optimal_local_size_xyz();
 
-    if (op_type == Operation_NEG)
-        return unary_op_inplace< unary_op_neg<float> >(bottom_top_blob);
+    std::vector<vk_specialization_type> specializations(1);
+    specializations[0].i = op_type;
 
-    if (op_type == Operation_FLOOR)
-        return unary_op_inplace< unary_op_floor<float> >(bottom_top_blob);
+    pipeline_unaryop->create("unaryop", specializations, 1, 5);
 
-    if (op_type == Operation_CEIL)
-        return unary_op_inplace< unary_op_ceil<float> >(bottom_top_blob);
-
-    if (op_type == Operation_SQUARE)
-        return unary_op_inplace< unary_op_square<float> >(bottom_top_blob);
-
-    if (op_type == Operation_SQRT)
-        return unary_op_inplace< unary_op_sqrt<float> >(bottom_top_blob);
-
-    if (op_type == Operation_RSQRT)
-        return unary_op_inplace< unary_op_rsqrt<float> >(bottom_top_blob);
-
-    if (op_type == Operation_EXP)
-        return unary_op_inplace< unary_op_exp<float> >(bottom_top_blob);
-
-    if (op_type == Operation_LOG)
-        return unary_op_inplace< unary_op_log<float> >(bottom_top_blob);
-
-    if (op_type == Operation_SIN)
-        return unary_op_inplace< unary_op_sin<float> >(bottom_top_blob);
-
-    if (op_type == Operation_COS)
-        return unary_op_inplace< unary_op_cos<float> >(bottom_top_blob);
-
-    if (op_type == Operation_TAN)
-        return unary_op_inplace< unary_op_tan<float> >(bottom_top_blob);
-
-    if (op_type == Operation_ASIN)
-        return unary_op_inplace< unary_op_asin<float> >(bottom_top_blob);
-
-    if (op_type == Operation_ACOS)
-        return unary_op_inplace< unary_op_acos<float> >(bottom_top_blob);
-
-    if (op_type == Operation_ATAN)
-        return unary_op_inplace< unary_op_atan<float> >(bottom_top_blob);
+    // pack4
+    {
+        pipeline_unaryop_pack4 = new Pipeline(vkdev);
+        pipeline_unaryop_pack4->set_optimal_local_size_xyz();
+        pipeline_unaryop_pack4->create("unaryop_pack4", specializations, 1, 5);
+    }
 
     return 0;
 }
+
+int UnaryOp::destroy_pipeline()
+{
+    delete pipeline_unaryop;
+    pipeline_unaryop = 0;
+
+    delete pipeline_unaryop_pack4;
+    pipeline_unaryop_pack4 = 0;
+
+    return 0;
+}
+
+int UnaryOp::forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const
+{
+    int packing = bottom_top_blob.packing;
+//     fprintf(stderr, "UnaryOp::forward_inplace %p\n", bottom_top_blob.buffer());
+
+    std::vector<VkMat> bindings(1);
+    bindings[0] = bottom_top_blob;
+
+    std::vector<vk_constant_type> constants(5);
+    constants[0].i = bottom_top_blob.dims;
+    constants[1].i = bottom_top_blob.w;
+    constants[2].i = bottom_top_blob.h;
+    constants[3].i = bottom_top_blob.c;
+    constants[4].i = bottom_top_blob.cstep;
+
+    const Pipeline* pipeline = packing == 4 ? pipeline_unaryop_pack4 : pipeline_unaryop;
+
+    // record
+    cmd.record_pipeline(pipeline, bindings, constants, bottom_top_blob);
+
+    return 0;
+}
+#endif // NCNN_VULKAN
 
 } // namespace ncnn

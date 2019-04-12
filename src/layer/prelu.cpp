@@ -22,118 +22,182 @@ PReLU::PReLU()
 {
     one_blob_only = true;
     support_inplace = true;
+    support_vulkan = true;
+
+#if NCNN_VULKAN
+    pipeline_prelu = 0;
+    pipeline_prelu_pack4 = 0;
+#endif // NCNN_VULKAN
 }
 
-#if NCNN_STDIO
-#if NCNN_STRING
-int PReLU::load_param(FILE* paramfp)
+int PReLU::load_param(const ParamDict& pd)
 {
-    int nscan = fscanf(paramfp, "%d", &num_slope);
-    if (nscan != 1)
-    {
-        fprintf(stderr, "PReLU load_param failed %d\n", nscan);
-        return -1;
-    }
-
-    return 0;
-}
-#endif // NCNN_STRING
-int PReLU::load_param_bin(FILE* paramfp)
-{
-    fread(&num_slope, sizeof(int), 1, paramfp);
+    num_slope = pd.get(0, 0);
 
     return 0;
 }
 
-int PReLU::load_model(FILE* binfp)
+int PReLU::load_model(const ModelBin& mb)
 {
-    int nread;
-
-    slope_data.create(num_slope);
+    slope_data = mb.load(num_slope, 1);
     if (slope_data.empty())
         return -100;
-    nread = fread(slope_data, num_slope * sizeof(float), 1, binfp);
-    if (nread != 1)
+
+    return 0;
+}
+
+int PReLU::forward_inplace(Mat& bottom_top_blob, const Option& opt) const
+{
+    int dims = bottom_top_blob.dims;
+
+    if (dims == 1)
     {
-        fprintf(stderr, "PReLU read slope_data failed %d\n", nread);
-        return -1;
+        int w = bottom_top_blob.w;
+
+        float* ptr = bottom_top_blob;
+
+        if (num_slope > 1)
+        {
+            #pragma omp parallel for num_threads(opt.num_threads)
+            for (int i=0; i<w; i++)
+            {
+                if (ptr[i] < 0)
+                    ptr[i] *= slope_data[i];
+            }
+        }
+        else
+        {
+            float slope = slope_data[0];
+
+            #pragma omp parallel for num_threads(opt.num_threads)
+            for (int i=0; i<w; i++)
+            {
+                if (ptr[i] < 0)
+                    ptr[i] *= slope;
+            }
+        }
     }
 
-    return 0;
-}
-#endif // NCNN_STDIO
-
-int PReLU::load_param(const unsigned char*& mem)
-{
-    num_slope = *(int*)(mem);
-    mem += 4;
-
-    return 0;
-}
-
-int PReLU::load_model(const unsigned char*& mem)
-{
-    slope_data = Mat(num_slope, (float*)mem);
-    mem += num_slope * sizeof(float);
-
-    return 0;
-}
-
-int PReLU::forward(const Mat& bottom_blob, Mat& top_blob) const
-{
-    int w = bottom_blob.w;
-    int h = bottom_blob.h;
-    int channels = bottom_blob.c;
-    int size = w * h;
-
-    top_blob.create(w, h, channels);
-    if (top_blob.empty())
-        return -100;
-
-    const float* slope_data_ptr = slope_data;
-
-    #pragma omp parallel for
-    for (int q=0; q<channels; q++)
+    if (dims == 2)
     {
-        const float* ptr = bottom_blob.channel(q);
-        float* outptr = top_blob.channel(q);
-        float slope = num_slope > 1 ? slope_data_ptr[q] : slope_data_ptr[0];
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
 
-        for (int i=0; i<size; i++)
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int i=0; i<h; i++)
         {
-            if (ptr[i] < 0)
-                outptr[i] = ptr[i] * slope;
-            else
-                outptr[i] = ptr[i];
+            float* ptr = bottom_top_blob.row(i);
+            float slope = num_slope > 1 ? slope_data[i] : slope_data[0];
+
+            for (int j=0; j<w; j++)
+            {
+                if (ptr[j] < 0)
+                    ptr[j] *= slope;
+            }
+        }
+    }
+
+    if (dims == 3)
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int channels = bottom_top_blob.c;
+        int size = w * h;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q=0; q<channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+            float slope = num_slope > 1 ? slope_data[q] : slope_data[0];
+
+            for (int i=0; i<size; i++)
+            {
+                if (ptr[i] < 0)
+                    ptr[i] *= slope;
+            }
         }
     }
 
     return 0;
 }
 
-int PReLU::forward_inplace(Mat& bottom_top_blob) const
+#if NCNN_VULKAN
+int PReLU::upload_model(VkTransfer& cmd)
 {
-    int w = bottom_top_blob.w;
-    int h = bottom_top_blob.h;
-    int channels = bottom_top_blob.c;
-    int size = w * h;
-
-    const float* slope_data_ptr = slope_data;
-
-    #pragma omp parallel for
-    for (int q=0; q<channels; q++)
+    if (num_slope == 1)
     {
-        float* ptr = bottom_top_blob.channel(q);
-        float slope = num_slope > 1 ? slope_data_ptr[q] : slope_data_ptr[0];
-
-        for (int i=0; i<size; i++)
-        {
-            if (ptr[i] < 0)
-                ptr[i] *= slope;
-        }
+        // dup4 for pack4
+        Mat slope_data4(4);
+        slope_data4.fill(slope_data[0]);
+        cmd.record_upload(slope_data4, slope_data_gpu);
+    }
+    else
+    {
+        cmd.record_upload(slope_data, slope_data_gpu);
     }
 
     return 0;
 }
+
+int PReLU::create_pipeline()
+{
+    std::vector<vk_specialization_type> specializations(1);
+    specializations[0].i = num_slope;
+
+    // pack1
+    if (num_slope == 1 || num_slope % 4 != 0)
+    {
+        pipeline_prelu = new Pipeline(vkdev);
+        pipeline_prelu->set_optimal_local_size_xyz(8, 8, num_slope);
+        pipeline_prelu->create("prelu", specializations, 2, 5);
+    }
+
+    // pack4
+    if (num_slope == 1 || num_slope % 4 == 0)
+    {
+        pipeline_prelu_pack4 = new Pipeline(vkdev);
+        pipeline_prelu_pack4->set_optimal_local_size_xyz(8, 8, num_slope / 4);
+        pipeline_prelu_pack4->create("prelu_pack4", specializations, 2, 5);
+    }
+
+    return 0;
+}
+
+int PReLU::destroy_pipeline()
+{
+    delete pipeline_prelu;
+    pipeline_prelu = 0;
+
+    delete pipeline_prelu_pack4;
+    pipeline_prelu_pack4 = 0;
+
+    return 0;
+}
+
+int PReLU::forward_inplace(VkMat& bottom_top_blob, VkCompute& cmd, const Option& opt) const
+{
+    int packing = bottom_top_blob.packing;
+
+//     fprintf(stderr, "PReLU::forward_inplace %p\n", bottom_top_blob.buffer());
+
+    std::vector<VkMat> bindings(2);
+    bindings[0] = bottom_top_blob;
+    bindings[1] = slope_data_gpu;
+
+    std::vector<vk_constant_type> constants(5);
+    constants[0].i = bottom_top_blob.dims;
+    constants[1].i = bottom_top_blob.w;
+    constants[2].i = bottom_top_blob.h;
+    constants[3].i = bottom_top_blob.c;
+    constants[4].i = bottom_top_blob.cstep;
+
+    const Pipeline* pipeline = packing == 4 ? pipeline_prelu_pack4 : pipeline_prelu;
+
+    // record
+    cmd.record_pipeline(pipeline, bindings, constants, bottom_top_blob);
+
+    return 0;
+}
+#endif // NCNN_VULKAN
 
 } // namespace ncnn
