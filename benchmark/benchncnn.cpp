@@ -30,6 +30,7 @@
 #if NCNN_VULKAN
 #include "gpu.h"
 
+#define PUBLIC_NET 0
 class GlobalGpuInstance
 {
 public:
@@ -448,6 +449,40 @@ void mobilenet_yolov3_run(const ncnn::Net& net)
     ex.extract("detection_out", out);
 }
 
+// #####################################################
+
+void resnet18_160_official_lk_init(ncnn::Net& net)
+{
+    net.load_param("resnet18_160_official_lk.param");
+}
+
+void resnet18_160_official_lk_run(const ncnn::Net& net)
+{
+    ncnn::Extractor ex = net.create_extractor();
+
+    ncnn::Mat in(160, 320, 3);
+    ex.input("data", in);
+    ncnn::Mat out;
+    ex.extract("conv_pred", out);
+}
+
+void resnet18_160_official_init(ncnn::Net& net)
+{
+    net.load_param("resnet18_160_official.param");
+}
+
+void resnet18_160_official_run(const ncnn::Net& net)
+{
+    ncnn::Extractor ex = net.create_extractor();
+
+    ncnn::Mat in(160, 320, 3);
+    ex.input("data", in);
+
+    ncnn::Mat out;
+    ex.extract("conv_pred", out);
+}
+// #####################################################
+
 int main(int argc, char** argv)
 {
     int loop_count = 4;
@@ -489,7 +524,7 @@ int main(int argc, char** argv)
 #endif // NCNN_VULKAN
 
     ncnn::Option opt;
-    opt.lightmode = true;
+    opt.lightmode = false;
     opt.num_threads = num_threads;
     opt.blob_allocator = &g_blob_pool_allocator;
     opt.workspace_allocator = &g_workspace_pool_allocator;
@@ -514,6 +549,7 @@ int main(int argc, char** argv)
     fprintf(stderr, "gpu_device = %d\n", gpu_device);
 
     // run
+#if PUBLIC_NET
     benchmark("squeezenet", squeezenet_init, squeezenet_run);
 
 #if NCNN_VULKAN
@@ -584,6 +620,11 @@ int main(int argc, char** argv)
 
     benchmark("mobilenet-yolov3", mobilenet_yolov3_init, mobilenet_yolov3_run);
 
+#else
+    benchmark("resnet18_160_official_lk", resnet18_160_official_lk_init, resnet18_160_official_lk_run);
+    benchmark("resnet18_160_official", resnet18_160_official_init, resnet18_160_official_run);
+
+#endif
 #if NCNN_VULKAN
     delete g_blob_vkallocator;
     delete g_staging_vkallocator;

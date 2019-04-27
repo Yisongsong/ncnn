@@ -1231,7 +1231,7 @@ int Net::forward_layer(int layer_index, std::vector<Mat>& blob_mats, Option& opt
         if (opt.lightmode)
         {
             // delete after taken in light mode
-            blob_mats[bottom_blob_index].release();
+            //blob_mats[bottom_blob_index].release();
             // deep copy for inplace forward if data is shared
             if (layer->support_inplace && *bottom_blob.refcount != 1)
             {
