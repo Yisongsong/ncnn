@@ -12,15 +12,11 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-#if __ARM_NEON
-#include <arm_neon.h>
-#endif // __ARM_NEON
-
 static inline signed char float2int8(float v)
 {
     int int32 = round(v);
     if (int32 > 127) return 127;
-    if (int32 < -128) return -128;
+    if (int32 < -127) return -127;
     return (signed char)int32;
 }
 
